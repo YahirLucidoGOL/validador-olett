@@ -14,19 +14,20 @@ st.markdown("### Triple Validación: RFC, Periodo y Operación")
 archivos_subidos = st.file_uploader("Sube tus PDFs o ZIPs", type=["pdf", "zip"], accept_multiple_files=True)
 
 def extraer_info_sat(texto):
-    """Buscador de ultra-precisión para el formato extendido del SAT"""
+    """Buscador de precisión quirúrgica para el formato del SAT"""
+    # Limpiamos el texto para que sea una sola línea continua en mayúsculas
     texto_limpio = re.sub(r'\s+', ' ', texto).upper()
     datos = {}
     
-    # A. NÚMERO DE OPERACIÓN 
+    # A. NÚMERO DE OPERACIÓN (Ej: 266440003547)
     op_match = re.search(r'N[ÚU]MERO\s*DE\s*OPERACI[ÓO]N[^\d]*(\d{10,14})', texto_limpio)
     datos['Operacion'] = op_match.group(1) if op_match else "N/A"
     
-    # B. RFC 
+    # B. RFC
     rfc_match = re.search(r'[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}', texto_limpio)
     datos['RFC'] = rfc_match.group() if rfc_match else "No encontrado"
     
-    # C. PERIODO (Unión de Mes y Ejercicio) [cite: 10, 15]
+    # C. PERIODO (Busca Mes y Ejercicio por separado)
     mes_match = re.search(r'PER[ÍI]ODO\s*DE\s*LA\s*DECLARACI[ÓO]N[:\s]*([A-Z]+)', texto_limpio)
     ejercicio_match = re.search(r'EJERCICIO[:\s]*(\d{4})', texto_limpio)
     if mes_match and ejercicio_match:
@@ -43,24 +44,25 @@ def extraer_info_sat(texto):
     datos['Tiene_Detalle'] = tiene_detalle
 
     if tiene_acuse:
-        # E. EXTRACCIÓN DE MONTOS (Búsqueda por proximidad de etiquetas)
+        # E. EXTRACCIÓN DE MONTOS (Búsqueda por etiquetas específicas)
         
-        # 1. ISR Retenciones por Salarios [cite: 21, 27]
+        # 1. ISR Retenciones por Salarios
         isr = re.search(r'RETENCIONES\s*POR\s*SALARIOS.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
         datos['ISR_Ret'] = f"${isr.group(1)}" if isr else "$0"
         
-        # 2. IVA [cite: 29, 34]
+        # 2. IVA
         iva = re.search(r'IMPUESTO\s*AL\s*VALOR\s*AGREGADO.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
         datos['IVA'] = f"${iva.group(1)}" if iva else "$0"
         
-        # 3. TOTAL DE LA LÍNEA DE CAPTURA (El millón y medio) [cite: 66, 67]
-        # Buscamos la sección de línea de captura y luego el primer importe con comas y más de 5 dígitos
-        if "LÍNEA DE CAPTURA" in texto_limpio:
-            seccion_pago = texto_limpio.split("LÍNEA DE CAPTURA")[-1]
-            total_final = re.search(r'TOTAL\s*A\s*PAGAR[^\d]*([\d,]{6,})', seccion_pago)
-            datos['Total'] = f"${total_final.group(1)}" if total_final else "$0"
+        # 3. TOTAL DE LA LÍNEA DE CAPTURA (El millón y medio)
+        # Buscamos la frase exacta "IMPORTE TOTAL A PAGAR" y capturamos los números
+        total_match = re.search(r'IMPORTE\s*TOTAL\s*A\s*PAGAR.*?([\d,]{5,})', texto_limpio)
+        if total_match:
+            datos['Total'] = f"${total_match.group(1)}"
         else:
-            datos['Total'] = "$0"
+            # Búsqueda secundaria si la primera falla
+            total_alt = re.search(r'TOTAL\s*A\s*PAGAR.*?([\d,]{5,})', texto_limpio)
+            datos['Total'] = f"${total_alt.group(1)}" if total_alt else "$0"
             
     return datos
 
