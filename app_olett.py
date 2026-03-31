@@ -15,19 +15,18 @@ archivos_subidos = st.file_uploader("Sube tus PDFs o ZIPs", type=["pdf", "zip"],
 
 def extraer_info_sat(texto):
     """Buscador de ultra-precisión para el formato extendido del SAT"""
-    # Limpieza profunda de espacios
     texto_limpio = re.sub(r'\s+', ' ', texto).upper()
     datos = {}
     
-    # A. NÚMERO DE OPERACIÓN
+    # A. NÚMERO DE OPERACIÓN 
     op_match = re.search(r'N[ÚU]MERO\s*DE\s*OPERACI[ÓO]N[^\d]*(\d{10,14})', texto_limpio)
     datos['Operacion'] = op_match.group(1) if op_match else "N/A"
     
-    # B. RFC
+    # B. RFC 
     rfc_match = re.search(r'[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}', texto_limpio)
     datos['RFC'] = rfc_match.group() if rfc_match else "No encontrado"
     
-    # C. PERIODO (Unión de Mes y Ejercicio)
+    # C. PERIODO (Unión de Mes y Ejercicio) [cite: 10, 15]
     mes_match = re.search(r'PER[ÍI]ODO\s*DE\s*LA\s*DECLARACI[ÓO]N[:\s]*([A-Z]+)', texto_limpio)
     ejercicio_match = re.search(r'EJERCICIO[:\s]*(\d{4})', texto_limpio)
     if mes_match and ejercicio_match:
@@ -44,26 +43,25 @@ def extraer_info_sat(texto):
     datos['Tiene_Detalle'] = tiene_detalle
 
     if tiene_acuse:
-        # E. EXTRACCIÓN DE MONTOS
+        # E. EXTRACCIÓN DE MONTOS (Búsqueda por proximidad de etiquetas)
         
-        # IVA
-        iva = re.search(r'IMPUESTO\s*AL\s*VALOR\s*AGREGADO.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
-        datos['IVA'] = f"${iva.group(1)}" if iva else "$0"
-        
-        # ISR Retenciones
+        # 1. ISR Retenciones por Salarios [cite: 21, 27]
         isr = re.search(r'RETENCIONES\s*POR\s*SALARIOS.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
         datos['ISR_Ret'] = f"${isr.group(1)}" if isr else "$0"
         
-        # TOTAL A PAGAR (Sección Línea de Captura)
-        # Buscamos "IMPORTE TOTAL A PAGAR", saltamos cualquier cosa hasta encontrar el primer número (ignorando el $)
-        total_final = re.search(r'IMPORTE\s*TOTAL\s*A\s*PAGAR.*?\s*\$?\s*([\d,]{3,})', texto_limpio)
-        if total_final:
-            datos['Total'] = f"${total_final.group(1)}"
-        else:
-            # Intento alternativo por si no trae la palabra "Importe"
-            total_alt = re.search(r'TOTAL\s*A\s*PAGAR.*?\s*\$?\s*([\d,]{3,})', texto_limpio)
-            datos['Total'] = f"${total_alt.group(1)}" if total_alt else "$0"
+        # 2. IVA [cite: 29, 34]
+        iva = re.search(r'IMPUESTO\s*AL\s*VALOR\s*AGREGADO.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
+        datos['IVA'] = f"${iva.group(1)}" if iva else "$0"
         
+        # 3. TOTAL DE LA LÍNEA DE CAPTURA (El millón y medio) [cite: 66, 67]
+        # Buscamos la sección de línea de captura y luego el primer importe con comas y más de 5 dígitos
+        if "LÍNEA DE CAPTURA" in texto_limpio:
+            seccion_pago = texto_limpio.split("LÍNEA DE CAPTURA")[-1]
+            total_final = re.search(r'TOTAL\s*A\s*PAGAR[^\d]*([\d,]{6,})', seccion_pago)
+            datos['Total'] = f"${total_final.group(1)}" if total_final else "$0"
+        else:
+            datos['Total'] = "$0"
+            
     return datos
 
 if archivos_subidos:
@@ -99,7 +97,7 @@ if archivos_subidos:
                 with c2: st.metric("ISR Retenciones", acu['ISR_Ret'])
                 with c3: st.metric("Total a Pagar (Línea)", acu['Total'])
             else:
-                st.error(f"❌ DISCREPANCIA: RFC o Periodo no coinciden.")
+                st.error("❌ DISCREPANCIA: RFC o Periodo no coinciden.")
         else:
             st.warning(f"⚠️ Operación {op} incompleta.")
 
