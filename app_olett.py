@@ -2,117 +2,124 @@ import streamlit as st
 import pdfplumber
 import re
 import pandas as pd
+import zipfile
+import io
 
-# 1. Configuración visual pro para Olett
-st.set_page_config(page_title="Olett Auditoría Pro", page_icon="🦉", layout="wide")
+# 1. Configuración de la plataforma Olett
+st.set_page_config(page_title="Olett Auditor Pro", page_icon="🦉", layout="wide")
 
 st.title("🦉 Auditoría de Precisión Olett")
-st.markdown("### Validación Triple: RFC, Periodo y Número de Operación")
-st.info("Sube el 'Detalle' y el 'Acuse' para realizar el cruce automático.")
+st.markdown("### Triple Validación: RFC, Periodo y Número de Operación")
+st.info("Sube archivos PDF (Detalle/Acuse), carpetas ZIP o archivos 'Todo en Uno'.")
 
-# 2. Cargador de archivos
-archivos = st.file_uploader("Arrastra aquí tus PDFs del SAT", type="pdf", accept_multiple_files=True)
+# 2. Cargador de archivos (PDF y ZIP)
+archivos_subidos = st.file_uploader("Arrastra tus archivos aquí", type=["pdf", "zip"], accept_multiple_files=True)
 
-def extraer_datos_sat(texto):
-    """Lógica para limpiar y extraer metadatos de los PDFs"""
-    datos = {}
-    # Convertimos saltos de línea en espacios para que las búsquedas no fallen
+def extraer_info_sat(texto):
+    """Motor de búsqueda flexible para documentos del SAT"""
     texto_limpio = texto.replace('\n', ' ')
+    datos = {}
     
-    # --- CRITERIOS DE VALIDACIÓN (Buscamos en ambos tipos de doc) ---
+    # A. Búsqueda de Número de Operación (Regex flexible para acentos y puntos)
+    # Basado en formato real: 'Número de operación: 266440003547'
+    op_match = re.search(r'N[ÚU]MERO DE OPERACI[ÓO]N[:\s]*(\d+)', texto_limpio, re.IGNORECASE)
+    datos['Operacion'] = op_match.group(1) if op_match else "N/A"
     
-    # RFC: Busca el patrón estándar de 12 o 13 caracteres
+    # B. RFC (Patrón estándar de 12-13 caracteres)
     rfc_match = re.search(r'[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}', texto_limpio)
     datos['RFC'] = rfc_match.group() if rfc_match else "No encontrado"
     
-    # Número de Operación: La llave para unir los archivos
-    op_match = re.search(r'NÚMERO DE OPERACIÓN:\s*(\d+)', texto_limpio)
-    datos['Operacion'] = op_match.group(1) if op_match else "N/A"
+    # C. Periodo (Mes y Año)
+    per_match = re.search(r'PERIODO:\s*([A-Z\s]+20\d{2})', texto_limpio)
+    datos['Periodo'] = per_match.group(1).strip() if per_match else "N/A"
     
-    # Periodo: Mes y Año (ej: FEBRERO DE 2026)
-    periodo_match = re.search(r'PERIODO:\s*([A-Z\s]+20\d{2})', texto_limpio)
-    datos['Periodo'] = periodo_match.group(1).strip() if periodo_match else "N/A"
+    # D. Identificación de Tipo de Documento
+    tiene_acuse = "ACUSE DE RECIBO" in texto_limpio
+    tiene_detalle = "DETERMINACIÓN" in texto_limpio or "INGRESOS" in texto_limpio
+    
+    datos['Es_Ambos'] = tiene_acuse and tiene_detalle
+    datos['Tipo'] = "ACUSE" if tiene_acuse else "DETALLE"
 
-    # --- DATOS EXCLUSIVOS DEL ACUSE ---
-    if "ACUSE DE RECIBO" in texto_limpio:
-        datos['Tipo'] = "ACUSE"
+    # E. Extracción de saldos (EXCLUSIVO DEL ACUSE)
+    if tiene_acuse:
+        # IVA (Busca 'Cantidad a pagar' después de mencionar el impuesto)
+        iva = re.search(r'IMPUESTO AL VALOR AGREGADO.*?CANTIDAD A PAGAR.*?([\d,]+)', texto_limpio)
+        datos['IVA'] = f"${iva.group(1)}" if iva else "$0"
         
-        # Monto total de la Línea de Captura
-        pago_match = re.search(r'TOTAL A PAGAR.*?([\d,]+)', texto_limpio)
-        datos['Total_Acuse'] = pago_match.group(1) if pago_match else "0"
+        # ISR Retenciones por salarios
+        isr = re.search(r'RETENCIONES POR SALARIOS.*?CANTIDAD A PAGAR.*?([\d,]+)', texto_limpio)
+        datos['ISR_Ret'] = f"${isr.group(1)}" if isr else "$0"
         
-        # Saldo de IVA (Cantidad a cargo)
-        iva_match = re.search(r'VALOR AGREGADO.*?CANTIDAD A CARGO.*?([\d,]+)', texto_limpio)
-        datos['IVA_Saldo'] = f"${iva_match.group(1)}" if iva_match else "$0.00"
-        
-        # Saldo de ISR Retenciones por Salarios
-        isr_match = re.search(r'RETENCIONES POR SALARIOS.*?CANTIDAD A CARGO.*?([\d,]+)', texto_limpio)
-        datos['ISR_Retenciones'] = f"${isr_match.group(1)}" if isr_match else "$0.00"
-    else:
-        datos['Tipo'] = "DETALLE"
+        # Total a Pagar (El de la línea de captura)
+        total = re.search(r'TOTAL A PAGAR.*?([\d,]+)', texto_limpio)
+        datos['Total'] = f"${total.group(1)}" if total else "$0"
         
     return datos
 
-# 3. Procesamiento de los archivos subidos
-if archivos:
-    grupos = {} # Diccionario para agrupar Detalle y Acuse por su número de operación
+if archivos_subidos:
+    grupos = {}
     
-    for arc in archivos:
-        with pdfplumber.open(arc) as pdf:
-            # Leemos todas las páginas y pasamos a mayúsculas
-            texto_full = "".join([p.extract_text().upper() for p in pdf.pages])
-            info = extraer_datos_sat(texto_full)
-            num_op = info['Operacion']
-            
-            # Si no existe el grupo para esta operación, lo creamos
-            if num_op not in grupos:
-                grupos[num_op] = {'DETALLE': None, 'ACUSE': None}
-            
-            # Guardamos el archivo según sea Detalle o Acuse
-            grupos[num_op][info['Tipo']] = info
+    for arc in archivos_subidos:
+        docs_a_procesar = []
+        # Si es ZIP, extraemos los PDFs internos
+        if arc.name.endswith('.zip'):
+            with zipfile.ZipFile(arc) as z:
+                for f in z.namelist():
+                    if f.endswith('.pdf'):
+                        docs_a_procesar.append(io.BytesIO(z.read(f)))
+        else:
+            docs_a_procesar.append(arc)
 
-    # 4. Mostrar Resultados y Validaciones
+        # Procesamos cada PDF individualmente
+        for doc in docs_a_procesar:
+            with pdfplumber.open(doc) as pdf:
+                texto_full = "".join([p.extract_text().upper() for p in pdf.pages if p.extract_text()])
+            
+            info = extraer_info_sat(texto_full)
+            op = info['Operacion']
+            
+            if op not in grupos:
+                grupos[op] = {'DETALLE': None, 'ACUSE': None}
+            
+            # Si el archivo contiene ambos (Caso Yahir), llena las dos casillas de una vez
+            if info['Es_Ambos']:
+                grupos[op]['DETALLE'] = info
+                grupos[op]['ACUSE'] = info
+            else:
+                grupos[op][info['Tipo']] = info
+
+    # 3. Presentación de Resultados y Auditoría
     for op, docs in grupos.items():
-        if op == "N/A": 
-            st.error("❌ Se subió un archivo que no tiene Número de Operación visible.")
+        if op == "N/A":
+            st.error("❌ No se detectó Número de Operación en uno de los archivos.")
             continue
+            
+        st.subheader(f"📑 Análisis de Operación: {op}")
+        det, acu = docs['DETALLE'], docs['ACUSE']
         
-        st.subheader(f"📑 Revisión Operación: {op}")
-        
-        detalle = docs['DETALLE']
-        acuse = docs['ACUSE']
-        
-        if detalle and acuse:
-            # --- LA TRIPLE VALIDACIÓN CRÍTICA ---
-            match_rfc = (detalle['RFC'] == acuse['RFC'])
-            match_periodo = (detalle['Periodo'] == acuse['Periodo'])
+        if det and acu:
+            # VALIDACIÓN TRIPLE: RFC, PERIODO Y OPERACIÓN
+            match_rfc = (det['RFC'] == acu['RFC'])
+            match_periodo = (det['Periodo'] == acu['Periodo'])
             
             if match_rfc and match_periodo:
-                st.success(f"✅ CONCILIACIÓN EXITOSA: Los documentos corresponden al mismo contribuyente y periodo.")
+                st.success(f"✅ CONCILIACIÓN EXITOSA: {acu['RFC']} - {acu['Periodo']}")
                 
-                # Columnas para mostrar resultados limpios (Solo del Acuse)
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("IVA (Acuse)", acuse['IVA_Saldo'])
-                with col2:
-                    st.metric("ISR Retenciones (Acuse)", acuse['ISR_Retenciones'])
-                with col3:
-                    st.metric("Total a Pagar (Acuse)", f"${acuse['Total_Acuse']}")
-                
-                st.write(f"**Contribuyente:** {acuse['RFC']} | **Periodo:** {acuse['Periodo']}")
+                # Métricas extraídas del Acuse
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("IVA (Acuse)", acu['IVA'])
+                with c2:
+                    st.metric("ISR Retenciones", acu['ISR_Ret'])
+                with c3:
+                    st.metric("Total a Pagar (Línea)", acu['Total'])
             else:
-                st.error("❌ DISCREPANCIA DETECTADA: Los archivos tienen el mismo número de operación pero el RFC o el Periodo NO coinciden.")
-                
-                # Tabla comparativa para que Yahir vea el error
-                error_df = pd.DataFrame({
-                    "Dato": ["RFC", "Periodo"],
-                    "En Detalle": [detalle['RFC'], detalle['Periodo']],
-                    "En Acuse": [acuse['RFC'], acuse['Periodo']]
-                })
-                st.table(error_df)
+                st.error("❌ DISCREPANCIA DETECTADA: El RFC o Periodo no coinciden entre documentos.")
+                st.write(f"RFC Detalle: {det['RFC']} vs Acuse: {acu['RFC']}")
+                st.write(f"Periodo Detalle: {det['Periodo']} vs Acuse: {acu['Periodo']}")
         else:
-            tipo_falta = "ACUSE" if not acuse else "DETALLE"
-            st.warning(f"⚠️ Falta el archivo de **{tipo_falta}** para completar la validación de la operación {op}.")
+            tipo_falta = "ACUSE" if not acu else "DETALLE"
+            st.warning(f"⚠️ Operación {op} incompleta. Falta subir el {tipo_falta}.")
 
 st.divider()
-st.caption("Desarrollado para Despacho Olett - Auditoría Automatizada 2026")
+st.caption("Tecnología Desarrollada para Despacho Olett - Auditoría Automatizada 2026")
