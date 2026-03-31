@@ -5,7 +5,7 @@ import pandas as pd
 import zipfile
 import io
 
-# 1. Configuración de Olett
+# 1. Configuración de la plataforma Olett
 st.set_page_config(page_title="Olett Auditor Pro", page_icon="🦉", layout="wide")
 
 st.title("🦉 Auditoría de Precisión Olett")
@@ -14,7 +14,8 @@ st.markdown("### Triple Validación: RFC, Periodo y Operación")
 archivos_subidos = st.file_uploader("Sube tus PDFs o ZIPs", type=["pdf", "zip"], accept_multiple_files=True)
 
 def extraer_info_sat(texto):
-    """Buscador de alta precisión para documentos del SAT"""
+    """Buscador de alta precisión diseñado para documentos combinados del SAT"""
+    # Limpieza profunda de espacios y saltos de línea
     texto_limpio = re.sub(r'\s+', ' ', texto).upper()
     datos = {}
     
@@ -30,16 +31,16 @@ def extraer_info_sat(texto):
     per_match = re.search(r'PERIODO:\s*([A-Z\s]+20\d{2})', texto_limpio)
     datos['Periodo'] = per_match.group(1).strip() if per_match else "N/A"
     
-    # D. CLASIFICACIÓN (Detección robusta de Detalle + Acuse)
-    tiene_acuse = "ACUSE DE RECIBO" in texto_limpio
-    # Buscamos varias palabras clave del Detalle por si una falla
-    tiene_detalle = any(x in texto_limpio for x in ["DETERMINA", "INGRESOS", "HOJA 1 DE 21"])
+    # D. CLASIFICACIÓN ULTRA-SENSIBLE
+    # El acuse tiene línea de captura; el detalle tiene ingresos nominales
+    tiene_acuse = any(x in texto_limpio for x in ["ACUSE DE RECIBO", "LÍNEA DE CAPTURA"])
+    tiene_detalle = any(x in texto_limpio for x in ["INGRESOS NOMINALES", "DETERMINACIÓN", "ISR PERSONAS MORALES"])
     
-    datos['Es_Ambos'] = tiene_acuse and tiene_detalle
-    datos['Tipo'] = "ACUSE" if tiene_acuse else "DETALLE"
+    datos['Tiene_Acuse'] = tiene_acuse
+    datos['Tiene_Detalle'] = tiene_detalle
 
     if tiene_acuse:
-        # Extracción de montos del Acuse
+        # Extracción de montos del Acuse con saltos de ruido
         iva = re.search(r'IMPUESTO\s*AL\s*VALOR\s*AGREGADO.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
         datos['IVA'] = f"${iva.group(1)}" if iva else "$0"
         
@@ -59,12 +60,10 @@ if archivos_subidos:
         if arc.name.endswith('.zip'):
             with zipfile.ZipFile(arc) as z:
                 for f in z.namelist():
-                    if f.endswith('.pdf'):
-                        docs_a_procesar.append(io.BytesIO(z.read(f)))
+                    if f.endswith('.pdf'): docs_a_procesar.append(io.BytesIO(z.read(f)))
         else:
             docs_a_procesar.append(arc)
 
-        # PROCESAMIENTO CORREGIDO (Dentro del loop de archivos)
         for doc in docs_a_procesar:
             with pdfplumber.open(doc) as pdf:
                 texto_full = ""
@@ -78,22 +77,24 @@ if archivos_subidos:
             if op not in grupos:
                 grupos[op] = {'DETALLE': None, 'ACUSE': None}
             
-            if info['Es_Ambos']:
-                grupos[op]['DETALLE'] = info
+            # Si el archivo tiene la parte de Acuse, lo guardamos
+            if info['Tiene_Acuse']:
                 grupos[op]['ACUSE'] = info
-            else:
-                grupos[op][info['Tipo']] = info
+            # Si el archivo tiene la parte de Detalle, lo guardamos (puede ser el mismo archivo)
+            if info['Tiene_Detalle']:
+                grupos[op]['DETALLE'] = info
 
     # 3. Presentación de Resultados
     for op, docs in grupos.items():
         if op == "N/A":
-            st.error("❌ No se detectó Número de Operación.")
+            st.error("❌ El sistema no pudo detectar el folio de operación.")
             continue
             
         st.subheader(f"📑 Operación: {op}")
         det, acu = docs['DETALLE'], docs['ACUSE']
         
         if det and acu:
+            # Validación Final
             if det['RFC'] == acu['RFC'] and det['Periodo'] == acu['Periodo']:
                 st.success(f"✅ CONCILIACIÓN EXITOSA: {acu['RFC']} - {acu['Periodo']}")
                 c1, c2, c3 = st.columns(3)
@@ -101,9 +102,10 @@ if archivos_subidos:
                 with c2: st.metric("ISR Retenciones", acu['ISR_Ret'])
                 with c3: st.metric("Total a Pagar (Línea)", acu['Total'])
             else:
-                st.error("❌ DISCREPANCIA: RFC o Periodo no coinciden.")
+                st.error(f"❌ DISCREPANCIA: RFC ({det['RFC']} vs {acu['RFC']}) o Periodo no coinciden.")
         else:
-            st.warning(f"⚠️ Operación {op} incompleta. Falta subir el Acuse o el Detalle.")
+            falta = "el Detalle" if not det else "el Acuse"
+            st.warning(f"⚠️ Operación {op} incompleta. No se detectó {falta} en los archivos subidos.")
 
 st.divider()
 st.caption("Olett Auditoría Automatizada - 2026")
