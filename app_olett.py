@@ -19,7 +19,7 @@ def extraer_info_sat(texto):
     texto_limpio = re.sub(r'\s+', ' ', texto).upper()
     datos = {}
     
-    # A. NÚMERO DE OPERACIÓN (Ej: 266440003547)
+    # A. NÚMERO DE OPERACIÓN
     op_match = re.search(r'N[ÚU]MERO\s*DE\s*OPERACI[ÓO]N[^\d]*(\d{10,14})', texto_limpio)
     datos['Operacion'] = op_match.group(1) if op_match else "N/A"
     
@@ -44,7 +44,7 @@ def extraer_info_sat(texto):
     datos['Tiene_Detalle'] = tiene_detalle
 
     if tiene_acuse:
-        # E. EXTRACCIÓN DE MONTOS (Búsqueda por etiquetas específicas)
+        # E. EXTRACCIÓN DE MONTOS
         
         # 1. ISR Retenciones por Salarios
         isr = re.search(r'RETENCIONES\s*POR\s*SALARIOS.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
@@ -54,15 +54,19 @@ def extraer_info_sat(texto):
         iva = re.search(r'IMPUESTO\s*AL\s*VALOR\s*AGREGADO.*?CANTIDAD\s*A\s*PAGAR.*?([\d,]+)', texto_limpio)
         datos['IVA'] = f"${iva.group(1)}" if iva else "$0"
         
-        # 3. TOTAL DE LA LÍNEA DE CAPTURA (El millón y medio)
-        # Buscamos la frase exacta "IMPORTE TOTAL A PAGAR" y capturamos los números
-        total_match = re.search(r'IMPORTE\s*TOTAL\s*A\s*PAGAR.*?([\d,]{5,})', texto_limpio)
+        # 3. TOTAL DE LA LÍNEA DE CAPTURA (Cifra Maestra)
+        # Intentamos buscar el número largo que sigue a "IMPORTE TOTAL A PAGAR"
+        total_match = re.search(r'IMPORTE\s*TOTAL\s*A\s*PAGAR[^\d]*([\d,.]+)', texto_limpio)
+        
+        # Si no lo encuentra, buscamos el número final en la cadena de la línea de captura (Plan B)
+        # La línea de captura tiene 20 caracteres seguidos de un espacio y el monto
+        if not total_match:
+            total_match = re.search(r'\d{20}\s*(\d+)', texto_limpio)
+            
         if total_match:
             datos['Total'] = f"${total_match.group(1)}"
         else:
-            # Búsqueda secundaria si la primera falla
-            total_alt = re.search(r'TOTAL\s*A\s*PAGAR.*?([\d,]{5,})', texto_limpio)
-            datos['Total'] = f"${total_alt.group(1)}" if total_alt else "$0"
+            datos['Total'] = "$0"
             
     return datos
 
